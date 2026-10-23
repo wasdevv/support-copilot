@@ -83,3 +83,8 @@ class RequestRecord:
     error_kind: str | None = None
     latency_ms: float = 0.0
     ttft_ms: float | None = None
+    hedged: bool = False
+    # Targets skipped because their circuit breaker was open: calls not made.
+    breaker_skips: int = 0
+    # Every breaker was open, so they were ignored for one pass over the chain.
+    panic: bool = False

@@ -14,6 +14,10 @@ One PRD per stage in `docs/prd/`; read the current stage's PRD before coding.
 - No `temperature`/`top_p`/`top_k` in Messages API requests (400 since 2026-10-21).
 - Local Ollama on this machine: `OLLAMA_MODELS=~/.local/ollama/models ~/.local/ollama/bin/ollama serve`
   (models: `llama3.2`, `nomic-embed-text`). Nothing in tests needs it.
+- Breaker/budget/hedge state lives in `app/llm/resilience.py` and the client. The
+  last target in the chain is special on purpose (budget never gates it; panic
+  mode exists because its breaker can open on noise). Read the "Found during
+  implementation" section of the v1.1 PRD before changing either.
 - Benchmark numbers in README/CHANGELOG are measured; rerun
   `python -m evals.outage_bench --seed 7` and update them together when the
   client or fault model changes.

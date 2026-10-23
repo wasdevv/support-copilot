@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import random
+import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 
@@ -50,6 +51,23 @@ def rate_limited(rate: float, retry_after: float) -> FaultFn:
 def down() -> FaultFn:
     def fault(_call: int, _rng: random.Random) -> errors.LLMError:
         return errors.ProviderOverloaded("injected outage")
+
+    return fault
+
+
+def bursts(period_s: float, down_s: float, phase_s: float = 0.0) -> FaultFn:
+    """Down for `down_s` out of every `period_s`, counted from the first call.
+    Every call inside a window fails: an outage, not bad luck per call."""
+    started: float | None = None
+
+    def fault(_call: int, _rng: random.Random) -> errors.LLMError | None:
+        nonlocal started
+        now = time.monotonic()
+        if started is None:
+            started = now
+        if (now - started + phase_s) % period_s < down_s:
+            return errors.ProviderOverloaded("injected burst outage")
+        return None
 
     return fault
 

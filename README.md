@@ -6,7 +6,7 @@ money and need to be measured. It grows in five stages, one release each:
 
 | Stage | Theme | Status |
 |---|---|---|
-| v1 | LLM calls are backend calls: timeouts, retries, fallback, cost log | **done** |
+| v1 | LLM calls are backend calls: timeouts, retries, fallback, circuit breakers, hedging, cost log | **done** (v1.1) |
 | v2 | Retrieval: hybrid search, reranking, citations, freshness | planned |
 | v3 | Cost and latency: prompt/semantic caching, model routing | planned |
 | v4 | Agent: refunds with step budgets, idempotent tools, human approval | planned |
@@ -37,45 +37,92 @@ money and need to be measured. It grows in five stages, one release each:
   with tokens, USD cost, latency and TTFT. `GET /v1/stats` reports per-endpoint
   error rate, fallback rate, attempts, cost and p50/p95 latency.
 - **Cost is never invented.** An unpriced model logs `NULL`, not `$0`. A
-  timed-out attempt may have been billed, so the request is flagged
-  `cost_complete = false` and its total is shown as a floor.
+  timed-out attempt or a cancelled hedge may have been billed, so the request
+  is flagged `cost_complete = false` and its total is shown as a floor.
+
+v1.1 adds state that lasts across requests (`app/llm/resilience.py`):
+
+- **Circuit breaker per model**: opens when 50% of the last 100 calls failed
+  (minimum 20 calls), skips the model without calling it, and half-opens after
+  a cooldown with a single probe. Bad requests, invalid output and refusals do
+  not count, because they say nothing about whether the model is up.
+- **Panic mode**: when every breaker is open, the client ignores them and tries
+  each model once (Envoy uses the same idea). A breaker on the last-resort model can open on noise,
+  and honoring it would turn a partial outage into a total one.
+- **Hedged requests** ("The Tail at Scale"): if the first model has not answered
+  by `hedge_after_s` (set near its normal p95), the same request goes to the next
+  model and the first answer wins. The loser is cancelled and its cost is
+  logged as unknown.
+- **Retry budget** (token bucket, as in gRPC retry throttling): retries and
+  hedges are capped at about 10% of traffic, so a failing provider is not hit
+  with 3× the load. A denied retry becomes a fallback. The budget never gates
+  the last model, where a denied retry would fail the user.
 
 The Anthropic SDK runs with `max_retries=0`. Two stacked retry policies
 multiply attempts (3 × 3 = 9 calls), so the client keeps the only one.
 
-### Measured: failure rate under simulated outages
+### Measured: failures, tail latency and provider load under simulated outages
 
 `python -m evals.outage_bench` sends the same 2,000 support questions per
-scenario through two clients over fault-injected providers. The naive client is
-one model, one attempt, a timeout. The resilient client is the one above.
+scenario through three clients over fault-injected providers:
+
+- **naive**: one model, one attempt, a timeout. What most code does.
+- **v1.0**: retries with backoff and the fallback chain.
+- **v1.1**: v1.0 plus circuit breakers, panic mode, hedging and the retry budget.
 
 2000 requests per scenario per client, seed 7:
 
-| scenario | naive failed | resilient failed | resilient p95 | avg attempts | fallback |
-|---|---:|---:|---:|---:|---:|
-| flaky_primary: 20% 5xx | 21.3% | 0.0% | 111 ms | 1.27 | 0.9% |
-| rate_limit_storm: 40% 429, Retry-After 0.2 s | 41.9% | 0.0% | 554 ms | 1.67 | 7.0% |
-| slow_primary: 30% of calls past the timeout | 32.4% | 0.0% | 735 ms | 1.46 | 3.0% |
-| primary_outage | 100.0% | 0.0% | 296 ms | 4.05 | 100.0% |
-| cloud_outage: both Claude models down | 100.0% | 1.8% | 1237 ms | 7.35 | 98.2% |
-| total_outage: everything down | 100.0% | 100.0% | 1292 ms | 9.00 | 0.0% |
+| scenario | naive failed | v1.0 failed | v1.1 failed |
+|---|---:|---:|---:|
+| flaky_primary: 20% 5xx | 21.3% | 0.0% | 0.0% |
+| rate_limit_storm: 40% 429, Retry-After 0.2 s | 41.9% | 0.0% | 0.2% |
+| slow_primary: 30% of calls past the timeout | 32.4% | 0.0% | 0.1% |
+| primary_outage | 100.0% | 0.0% | 0.1% |
+| cloud_outage: both Claude models down | 100.0% | 2.1% | 2.2% |
+| burst_outages: primary down 40% of the time, secondary 25%, in windows | 46.9% | 0.1% | 0.1% |
+| total_outage: everything down | 100.0% | 100.0% | 100.0% |
 
-Across the five partial-outage scenarios, the share of failed requests drops
-from **59.1% to 0.4%**. `total_outage` is listed to show where the policy stops
-helping: when every target is down, no client-side retry policy can serve the request.
+| scenario | p95 v1.0 | p95 v1.1 | change | provider calls/request v1.0 → v1.1 | hedged |
+|---|---:|---:|---:|---:|---:|
+| flaky_primary | 111 ms | 93 ms | −16% | 1.27 → 1.27 | 3.7% |
+| rate_limit_storm | 554 ms | 212 ms | −62% | 1.67 → 1.27 | 9.6% |
+| slow_primary | 727 ms | 362 ms | −50% | 1.46 → 1.25 | 10.2% |
+| primary_outage | 292 ms | 108 ms | −63% | 4.05 → 1.22 | 10.0% |
+| cloud_outage | 1237 ms | 803 ms | −35% | 7.34 → 1.46 | 1.8% |
+| burst_outages | 231 ms | 173 ms | −25% | 1.38 → 1.25 | 4.5% |
+| total_outage | 1294 ms | 393 ms | −70% | 9.00 → 2.96 | 1.0% |
+
+Results across the six partial-outage scenarios:
+
+- **Failed requests: 57.1% (naive) → 0.5% (v1.1).**
+- **p95 latency: −44% on average versus v1.0.** In a full primary outage it drops
+  from 292 ms to 108 ms (−63%).
+- **Load on providers during outages:** calls per request fall by 70% when the
+  primary is down (4.05 → 1.22) and by 80% when both cloud models are down
+  (7.34 → 1.46). That is the retry storm v1.0 would put on a provider that is
+  already failing.
+
+v1.1 fails about as often as v1.0 (0.5% vs 0.4%). What it buys is latency
+and provider load, not success rate. A second run with the same seed gave 0.3%
+for both and −44% p95. Seed 11 gave 0.4% and −43%. Variance between runs comes
+from asyncio scheduling, at about 0.2 pp.
 
 How to read these numbers:
 
-- Latencies are scaled down (a 30 ms call, 300 ms attempt timeout, 2 s deadline)
-  so a run takes under a minute. Timeouts and backoff are scaled with them.
-- Faults are drawn per call, not correlated in time. Real outages come in
-  bursts, so these numbers are an upper bound on what retries alone can fix.
-  Fallback to a different model is what covers correlated failures.
-- The local fallback has a slow tail (25% of calls exceed the timeout) because
-  CPU inference does. That tail causes the 1.8% in `cloud_outage`.
-- Retries cost latency. During a full primary outage, every request spends
-  three attempts on the dead primary before falling back (4.05 attempts on
-  average). A circuit breaker would skip it. That is noted for v3.
+- **Scale:** latencies are scaled down. A 30 ms call, a 300 ms attempt timeout and a 2 s
+  deadline stand for roughly 2 s, 20 s and 2 min. Backoff, breaker
+  cooldowns and outage windows are scaled by the same factor.
+- **Fault model:** five scenarios draw faults independently per call, which is
+  the easy case. `burst_outages` takes models down in time windows. The local model
+  has a 25% slow tail of its own, as CPU inference does, so the last fallback can
+  fail too. That tail is the 2.2% in `cloud_outage`.
+- **The price of hedging:** 1–10% of requests send a second call. The calls/request
+  column includes those calls and the cancelled losers.
+- **Where the policy stops:** in `total_outage` nothing can succeed. v1.1 fails
+  in 393 ms with 3 calls instead of 1.3 s with 9.
+- **Rejected designs:** v1.1 had three earlier versions that made some
+  scenario worse than v1.0, for example 94% failures in `cloud_outage`. The
+  causes and fixes are in `docs/prd/stage-1.1-breakers-hedging-budget.md`.
 
 ### Live run against a real model
 
@@ -103,7 +150,7 @@ from v2 onward.
 |---|---|---|
 | POST | `/v1/answer` | `{"question": "...", "stream": false}`; with `stream: true` the reply is SSE (`delta`, then `done` or `error`) |
 | POST | `/v1/triage` | `{"message": "..."}` → category, priority, sentiment, summary |
-| GET | `/v1/stats` | per-endpoint requests, error and fallback rate, attempts, cost, p50/p95 latency, p95 TTFT |
+| GET | `/v1/stats` | per endpoint: requests, error/fallback/hedge/panic rate, calls per request, cost, p50/p95 latency, p95 TTFT |
 | GET | `/healthz` | liveness |
 
 Every response carries `request_id`, the `provider`/`model` that answered,
@@ -115,7 +162,7 @@ Every response carries `request_id`, the `provider`/`model` that answered,
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
-.venv/bin/pytest                      # 40 tests, about 5 s
+.venv/bin/pytest                      # 59 tests, about 5 s
 .venv/bin/python -m evals.outage_bench
 .venv/bin/uvicorn app.api:from_env --factory --port 8000
 ```
@@ -124,6 +171,7 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 |---|---|
 | `SC_CHAIN` | `anthropic:claude-haiku-5-5,anthropic:claude-sonnet-5-5,ollama:llama3.2` |
 | `SC_ATTEMPT_TIMEOUT_S` / `SC_DEADLINE_S` | `20` / `45` |
+| `SC_HEDGE_AFTER_S` | `4` (`off` disables hedging) |
 | `SC_DB` | `var/copilot.db` |
 | `OLLAMA_URL` | `http://127.0.0.1:11434` |
 | `ANTHROPIC_API_KEY` | read by the Anthropic SDK |
@@ -132,7 +180,8 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 
 ```
 app/
-  llm/          v1: client (retry, fallback, timeouts), providers, pricing, cost log
+  llm/          v1: client (retry, fallback, timeouts, hedging), resilience
+                (breakers, retry budget), providers, pricing, cost log
   api.py        FastAPI endpoints
   prompts.py    system prompts and the triage schema
 evals/          support questions (grow every stage) and the outage benchmark

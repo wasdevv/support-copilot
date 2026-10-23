@@ -17,6 +17,7 @@ FAST = RetryPolicy(
     backoff_cap_s=1.0,
     first_token_timeout_s=0.5,
     idle_timeout_s=0.5,
+    hedge_after_s=None,
 )
 
 

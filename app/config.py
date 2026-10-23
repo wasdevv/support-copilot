@@ -32,9 +32,13 @@ def llm_from_env() -> tuple[ResilientLLM, CostLog]:
         from app.llm.providers.ollama import OllamaProvider
 
         providers["ollama"] = OllamaProvider(os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434"))
+    hedge = os.environ.get("SC_HEDGE_AFTER_S", "4")
     policy = RetryPolicy(
         attempt_timeout_s=float(os.environ.get("SC_ATTEMPT_TIMEOUT_S", 20)),
         deadline_s=float(os.environ.get("SC_DEADLINE_S", 45)),
+        # "off" disables hedging, e.g. when the second target is a paid model
+        # and latency matters less than spend.
+        hedge_after_s=None if hedge == "off" else float(hedge),
     )
     log = CostLog(os.environ.get("SC_DB", "var/copilot.db"))
     return ResilientLLM(providers, chain, policy, log), log

@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.1.0 (2026-10-23): circuit breakers, hedged requests, retry budget
+
+- Per-model circuit breaker (failure rate over the last 100 calls, minimum 20,
+  half-open single probe). Invalid output, refusals and bad requests do not trip it.
+- Panic mode: when every breaker is open, ignore them and try each model once.
+- Hedged requests: after `hedge_after_s` the same request goes to the next model,
+  first answer wins, and the loser is cancelled and logged with unknown cost.
+- Retry budget (token bucket, ~10% of traffic). A denied retry becomes a
+  fallback, and the last model is never gated.
+- Log and `/v1/stats` gain hedge rate, panic rate and breaker skips.
+- Benchmark compares naive / v1.0 / v1.1 and adds `burst_outages`. Over six
+  partial-outage scenarios: failed requests 57.1% → 0.5%, p95 −44% versus
+  v1.0, and provider calls per request −70% in a primary outage and −80% in a
+  cloud outage.
+
 ## v1.0.0 (2026-10-23): LLM calls are backend calls
 
 - Resilient client (`app/llm/client.py`) with per-attempt timeouts, a request

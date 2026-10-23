@@ -34,7 +34,10 @@ CREATE TABLE IF NOT EXISTS requests (
     cost_usd      TEXT,
     cost_complete INTEGER NOT NULL,
     latency_ms    REAL NOT NULL,
-    ttft_ms       REAL
+    ttft_ms       REAL,
+    hedged        INTEGER NOT NULL,
+    breaker_skips INTEGER NOT NULL,
+    panic         INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS attempts (
     request_id    TEXT NOT NULL REFERENCES requests(request_id),
@@ -86,7 +89,7 @@ class CostLog:
         first_target = record.attempts[0].target if record.attempts else None
         with self._lock, self._db:
             self._db.execute(
-                "INSERT INTO requests VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO requests VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     record.request_id,
                     record.endpoint,
@@ -103,6 +106,9 @@ class CostLog:
                     int(complete),
                     record.latency_ms,
                     record.ttft_ms,
+                    int(record.hedged),
+                    record.breaker_skips,
+                    int(record.panic),
                 ),
             )
             self._db.executemany(
@@ -134,7 +140,7 @@ class CostLog:
     def stats(self) -> dict[str, dict[str, Any]]:
         rows = self._db.execute(
             "SELECT endpoint, outcome, cost_usd, cost_complete, latency_ms, ttft_ms,"
-            " attempts, fallback FROM requests"
+            " attempts, fallback, hedged, breaker_skips, panic FROM requests"
         ).fetchall()
         by_endpoint: dict[str, list[sqlite3.Row]] = {}
         for row in rows:
@@ -153,7 +159,12 @@ def _summarize(rows: list[sqlite3.Row]) -> dict[str, Any]:
         "errors": errors,
         "error_rate": errors / n,
         "fallback_rate": sum(r["fallback"] for r in rows) / n,
+        # Provider calls per request, cancelled hedge losers included: the load
+        # this endpoint puts on providers relative to a single call.
         "avg_attempts": sum(r["attempts"] for r in rows) / n,
+        "hedge_rate": sum(r["hedged"] for r in rows) / n,
+        "breaker_skips": sum(r["breaker_skips"] for r in rows),
+        "panic_rate": sum(r["panic"] for r in rows) / n,
         "cost_usd": str(cost),
         # Requests whose cost is only a floor. When non-zero, cost_usd is a minimum.
         "cost_incomplete_requests": sum(not r["cost_complete"] for r in rows),
