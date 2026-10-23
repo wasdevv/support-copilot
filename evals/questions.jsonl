@@ -1,0 +1,25 @@
+{"id": "q001", "category": "shipping", "question": "How long does standard shipping take to São Paulo?"}
+{"id": "q002", "category": "shipping", "question": "My order says delivered but I never got it. What now?"}
+{"id": "q003", "category": "shipping", "question": "Can I change the delivery address after the order shipped?"}
+{"id": "q004", "category": "shipping", "question": "Do you ship to Portugal?"}
+{"id": "q005", "category": "returns", "question": "How many days do I have to return a pair of shoes?"}
+{"id": "q006", "category": "returns", "question": "Who pays the return shipping if the item arrived damaged?"}
+{"id": "q007", "category": "returns", "question": "Can I return an item I bought on sale?"}
+{"id": "q008", "category": "returns", "question": "I returned a jacket two weeks ago and still have no refund."}
+{"id": "q009", "category": "billing", "question": "I was charged twice for the same order."}
+{"id": "q010", "category": "billing", "question": "Can I pay with Pix and split it in installments?"}
+{"id": "q011", "category": "billing", "question": "Why was my credit card declined at checkout?"}
+{"id": "q012", "category": "billing", "question": "How do I get an invoice (nota fiscal) for my purchase?"}
+{"id": "q013", "category": "account", "question": "I forgot my password and the reset email never arrives."}
+{"id": "q014", "category": "account", "question": "How do I delete my account and my data?"}
+{"id": "q015", "category": "account", "question": "Can I merge two accounts with different emails?"}
+{"id": "q016", "category": "product", "question": "Is the blue backpack waterproof?"}
+{"id": "q017", "category": "product", "question": "When will size 42 of the running shoe be back in stock?"}
+{"id": "q018", "category": "product", "question": "Does the coffee maker come with a warranty?"}
+{"id": "q019", "category": "product", "question": "What is the difference between the Pro and the Lite model?"}
+{"id": "q020", "category": "other", "question": "Do you have a physical store in Curitiba?"}
+{"id": "q021", "category": "other", "question": "Can I talk to a human agent?"}
+{"id": "q022", "category": "billing", "question": "Can I use two discount coupons in the same order?"}
+{"id": "q023", "category": "shipping", "question": "The tracking code has not updated in five days."}
+{"id": "q024", "category": "returns", "question": "Can I exchange a gift without the receipt?"}
+{"id": "q025", "category": "account", "question": "Someone placed an order with my account that I did not make."}
