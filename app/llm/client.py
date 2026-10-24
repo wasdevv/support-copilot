@@ -151,7 +151,7 @@ class ResilientLLM:
                         raise last
                     if time.monotonic() - start >= self.policy.deadline_s:
                         raise errors.DeadlineExceeded(f"deadline exceeded; last error: {last.kind}")
-                    if not self._may_retry(target):
+                    if not self._may_retry(index):
                         break
                     delay = self._next_delay(last, attempt_no)
                     if delay is None or time.monotonic() - start + delay >= self.policy.deadline_s:
@@ -286,12 +286,12 @@ class ResilientLLM:
         """In panic mode, one call per target bounds the cost of ignoring breakers.
         The last target keeps its retries: cutting them turns its normal failure
         rate (a CPU model's slow tail) straight into user-facing failures."""
-        return self.policy.attempts_per_target if index == len(self.chain) - 1 else 1
+        return self.policy.attempts_per_target if self._is_last(index) else 1
 
     def _retry_allowed(self, index: int) -> bool:
         """The budget turns a retry into a fallback, never into a failure: on the
         last target there is nothing to fall back to, so the retry is not gated."""
-        if self.budget is None or index == len(self.chain) - 1:
+        if self.budget is None or self._is_last(index):
             return True
         return self.budget.withdraw()
 
@@ -299,10 +299,19 @@ class ResilientLLM:
         breaker = self.breakers.get(str(target))
         return breaker is None or breaker.allow()
 
-    def _may_retry(self, target: Target) -> bool:
-        """A breaker that opened during this request also stops its retries."""
-        breaker = self.breakers.get(str(target))
+    def _may_retry(self, index: int) -> bool:
+        """A breaker that opened during this request also stops its retries, except
+        on the last target, where stopping means failing the user."""
+        if self._is_last(index):
+            return True
+        breaker = self.breakers.get(str(self.chain[index]))
         return breaker is None or breaker.state == "closed"
+
+    def _is_last(self, index: int) -> bool:
+        # The last target is never abandoned early: not by the retry budget, not
+        # by its own breaker opening mid-request, not in panic mode. Each of those
+        # was measured turning its normal failure rate into user-facing failures.
+        return index == len(self.chain) - 1
 
     def _hedge_target(self, index: int) -> Target | None:
         if self.policy.hedge_after_s is None:
@@ -416,7 +425,7 @@ class ResilientLLM:
                             raise errors.DeadlineExceeded(
                                 f"deadline exceeded; last error: {last.kind}"
                             )
-                        if not self._may_retry(target):
+                        if not self._may_retry(self.chain.index(target)):
                             break
                         delay = self._next_delay(last, attempt_no)
                         if (

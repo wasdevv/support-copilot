@@ -116,6 +116,13 @@ somewhere, and each failure had a structural cause:
    the slower CI runner, against 1.8% for v1.0, whenever the local breaker opened.
    The last target keeps its retries in panic mode too, the same rule as the budget.
 
+6. **The breaker cut the last target's retries mid-request.** When the local
+   breaker opened during a request, `_may_retry` ended it with retries left and
+   without going through panic mode. On the CI runner this produced 3.4% in
+   `cloud_outage`, against 2.0% for v1.0. It was reproduced by pinning the
+   benchmark to one contended core. All "last target" exceptions now live in
+   `ResilientLLM._is_last`.
+
 ## Passos
 
 1. `resilience.py` + unit tests.

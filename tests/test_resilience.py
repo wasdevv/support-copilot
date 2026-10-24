@@ -265,3 +265,15 @@ async def test_empty_budget_still_retries_the_last_target(build, sleeps):
 
     assert only.calls == 2 and len(sleeps) == 1
     assert result.record.outcome == "ok"
+
+
+async def test_breaker_opening_mid_request_does_not_cut_last_target_retries(build):
+    only = SimulatedProvider("a", fault=fail_calls(0))
+    llm = build(
+        (only, "sim-primary"),
+        policy=policy(breaker=BreakerPolicy(window=1, min_calls=1, open_s=60)),
+    )
+
+    result = await llm.complete(ask(), endpoint="answer")
+
+    assert result.record.outcome == "ok" and only.calls == 2

@@ -74,43 +74,39 @@ scenario through three clients over fault-injected providers:
 
 | scenario | naive failed | v1.0 failed | v1.1 failed |
 |---|---:|---:|---:|
-| flaky_primary: 20% 5xx | 21.3% | 0.0% | 0.0% |
-| rate_limit_storm: 40% 429, Retry-After 0.2 s | 41.9% | 0.0% | 0.1% |
-| slow_primary: 30% of calls past the timeout | 32.4% | 0.0% | 0.2% |
-| primary_outage | 100.0% | 0.0% | 0.0% |
-| cloud_outage: both Claude models down | 100.0% | 2.6% | 1.8% |
-| burst_outages: primary down 40% of the time, secondary 25%, in windows | 47.5% | 0.1% | 0.2% |
+| flaky_primary: 20% 5xx | 21.3% | 0.0% | 0.1% |
+| rate_limit_storm: 40% 429, Retry-After 0.2 s | 41.9% | 0.0% | 0.3% |
+| slow_primary: 30% of calls past the timeout | 32.4% | 0.0% | 0.1% |
+| primary_outage | 100.0% | 0.0% | 0.1% |
+| cloud_outage: both Claude models down | 100.0% | 2.0% | 1.8% |
+| burst_outages: primary down 40% of the time, secondary 25%, in windows | 47.5% | 0.1% | 0.1% |
 | total_outage: everything down | 100.0% | 100.0% | 100.0% |
 
 | scenario | p95 v1.0 | p95 v1.1 | change | provider calls/request v1.0 → v1.1 | hedged |
 |---|---:|---:|---:|---:|---:|
-| flaky_primary | 111 ms | 94 ms | −15% | 1.27 → 1.27 | 3.7% |
-| rate_limit_storm | 554 ms | 212 ms | −62% | 1.67 → 1.27 | 9.4% |
-| slow_primary | 730 ms | 362 ms | −50% | 1.45 → 1.21 | 10.2% |
-| primary_outage | 292 ms | 106 ms | −64% | 4.05 → 1.21 | 10.1% |
-| cloud_outage | 1230 ms | 797 ms | −35% | 7.34 → 1.46 | 1.8% |
-| burst_outages | 231 ms | 169 ms | −27% | 1.38 → 1.24 | 4.3% |
-| total_outage | 1304 ms | 991 ms | −24% | 9.00 → 4.61 | 1.0% |
+| flaky_primary | 110 ms | 93 ms | −15% | 1.27 → 1.27 | 3.5% |
+| rate_limit_storm | 554 ms | 214 ms | −61% | 1.67 → 1.34 | 9.0% |
+| slow_primary | 730 ms | 362 ms | −51% | 1.45 → 1.21 | 10.2% |
+| primary_outage | 291 ms | 120 ms | −59% | 4.05 → 1.22 | 9.9% |
+| cloud_outage | 1225 ms | 811 ms | −34% | 7.34 → 1.46 | 1.8% |
+| burst_outages | 230 ms | 211 ms | −8% | 1.39 → 1.28 | 4.5% |
+| total_outage | 1299 ms | 995 ms | −23% | 9.00 → 4.75 | 1.0% |
 
 Results across the six partial-outage scenarios:
 
 - **Failed requests: 57.2% (naive) → 0.4% (v1.1).**
-- **p95 latency: −45% on average versus v1.0.** In a full primary outage it drops
-  from 292 ms to 106 ms (−64%).
+- **p95 latency: −42% on average versus v1.0.** In a full primary outage it drops
+  from 291 ms to 120 ms (−59%). With a 429 storm it drops from 554 ms to 214 ms (−61%).
 - **Load on providers during outages:** calls per request fall by 70% when the
-  primary is down (4.05 → 1.21) and by 80% when both cloud models are down
+  primary is down (4.05 → 1.22) and by 80% when both cloud models are down
   (7.34 → 1.46). That is the retry storm v1.0 would put on a provider that is
   already failing.
 
-v1.1 fails as often as v1.0 (0.4% each). What it buys is latency and provider
+v1.1 fails as often as v1.0 (0.3–0.4%). What it buys is latency and provider
 load, not success rate. Runs are not bit-for-bit reproducible, because asyncio
-scheduling decides which timeouts land together:
-
-- **`cloud_outage` across five runs:** v1.0 and v1.1 both fail in the 1.5–2.6% range.
-- **Every CI run:** the result is published in the workflow summary.
-- **The first CI run of v1.1:** it showed `cloud_outage` at 5.2%, against 1.8%
-  for v1.0. The cause was that panic mode gave the last model a single attempt,
-  and it has been fixed (see the PRD).
+scheduling decides which timeouts land together. Across repeated runs, the p95
+gain stays between −42% and −45%, and `cloud_outage` stays between 1.4% and 2.6% for
+both clients. Every CI run publishes its own table in the workflow summary.
 
 How to read these numbers:
 
@@ -124,11 +120,13 @@ How to read these numbers:
 - **The price of hedging:** 1–10% of requests send a second call. The calls/request
   column includes those calls and the cancelled losers.
 - **Where the policy stops:** in `total_outage` nothing can succeed. v1.1 still
-  gives the last model its retries in panic mode, so it spends 4.6 calls instead
+  gives the last model its retries in panic mode, so it spends 4.75 calls instead
   of 9 and fails in about 1 s instead of 1.3 s.
-- **Rejected designs:** v1.1 had three earlier versions that made some
-  scenario worse than v1.0, for example 94% failures in `cloud_outage`. The
-  causes and fixes are in `docs/prd/stage-1.1-breakers-hedging-budget.md`.
+- **Rejected designs:** five versions of v1.1 made some scenario worse than
+  v1.0. The worst was 94% failures in `cloud_outage`, and two of them only showed
+  up on the slower CI runner. They all had the same root cause: some mechanism
+  gave up on the **last** model. The causes and fixes are in
+  `docs/prd/stage-1.1-breakers-hedging-budget.md`.
 
 ### Live run against a real model
 
