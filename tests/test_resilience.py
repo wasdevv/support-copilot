@@ -139,7 +139,8 @@ async def test_all_breakers_open_enters_panic_mode_with_one_call_per_target(buil
         await llm.complete(ask(), endpoint="answer", request_id="r2")
 
     row = log.get("r2")
-    assert row["panic"] == 1 and row["attempts"] == 2 and row["breaker_skips"] == 2
+    # One call to the first target, full retries on the last.
+    assert row["panic"] == 1 and row["attempts"] == 1 + 3 and row["breaker_skips"] == 2
 
 
 async def test_panic_mode_serves_from_a_recovered_last_resort(build):
@@ -172,7 +173,7 @@ async def test_stream_panic_mode_tries_each_target_once(build):
     events = [e async for e in llm.stream(ask(), endpoint="answer")]
 
     assert events[-1].completion.text == "back up"
-    assert a.calls == 4 and b.calls == 4
+    assert a.calls == 4 and b.calls == 4  # 3 to open each breaker, then 1 in panic
 
 
 async def test_breaker_opening_mid_request_stops_its_retries(build):

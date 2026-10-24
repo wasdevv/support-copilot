@@ -163,24 +163,32 @@ class ResilientLLM:
                 # Panic mode (Envoy's term): every breaker is open. A breaker on
                 # the last resort can open on noise, and honoring all of them
                 # would turn a partial outage into a total one. Try each target
-                # once, with no retries, so the cost stays bounded at one call per target.
+                # once; only the last target keeps its retries (see _panic_attempts).
                 record.panic = True
-                for target in self.chain:
-                    remaining = self.policy.deadline_s - (time.monotonic() - start)
-                    if remaining <= 0:
-                        break
-                    timeout = min(self.policy.attempt_timeout_s, remaining)
-                    try:
-                        value, completion = await self._attempt(
-                            target, request, parse, timeout, record
-                        )
-                    except errors.LLMError as exc:
-                        last = exc
-                        if not exc.fallback_ok:
-                            raise
-                    else:
-                        record.outcome = "ok"
-                        return Result(value, completion, record)
+                for index, target in enumerate(self.chain):
+                    for attempt_no in range(self._panic_attempts(index)):
+                        remaining = self.policy.deadline_s - (time.monotonic() - start)
+                        if remaining <= 0:
+                            break
+                        timeout = min(self.policy.attempt_timeout_s, remaining)
+                        try:
+                            value, completion = await self._attempt(
+                                target, request, parse, timeout, record
+                            )
+                        except errors.LLMError as exc:
+                            last = exc
+                            if not exc.fallback_ok:
+                                raise
+                        else:
+                            record.outcome = "ok"
+                            return Result(value, completion, record)
+                        delay = self._next_delay(last, attempt_no)
+                        if (
+                            delay is None
+                            or time.monotonic() - start + delay >= self.policy.deadline_s
+                        ):
+                            break
+                        await self._sleep(delay)
             if last is None:
                 raise errors.DeadlineExceeded("request deadline exceeded")
             raise errors.AllTargetsFailed(last)
@@ -274,6 +282,12 @@ class ResilientLLM:
         assert failure is not None
         raise failure
 
+    def _panic_attempts(self, index: int) -> int:
+        """In panic mode, one call per target bounds the cost of ignoring breakers.
+        The last target keeps its retries: cutting them turns its normal failure
+        rate (a CPU model's slow tail) straight into user-facing failures."""
+        return self.policy.attempts_per_target if index == len(self.chain) - 1 else 1
+
     def _retry_allowed(self, index: int) -> bool:
         """The budget turns a retry into a fallback, never into a failure: on the
         last target there is nothing to fall back to, so the retry is not gated."""
@@ -326,7 +340,11 @@ class ResilientLLM:
                     if not panic and not self._allow(target):
                         record.breaker_skips += 1
                         continue
-                    attempts = 1 if panic else self.policy.attempts_per_target
+                    attempts = (
+                        self._panic_attempts(self.chain.index(target))
+                        if panic
+                        else self.policy.attempts_per_target
+                    )
                     for attempt_no in range(attempts):
                         remaining = self.policy.deadline_s - (time.monotonic() - start)
                         if remaining <= 0:

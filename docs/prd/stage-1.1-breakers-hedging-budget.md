@@ -112,6 +112,10 @@ somewhere, and each failure had a structural cause:
    `rate_limit_storm`). Rule: the budget does not gate the last target in the
    chain.
 
+5. **Panic mode with one call per target** let `cloud_outage` reach 5.2% on
+   the slower CI runner, against 1.8% for v1.0, whenever the local breaker opened.
+   The last target keeps its retries in panic mode too, the same rule as the budget.
+
 ## Passos
 
 1. `resilience.py` + unit tests.
